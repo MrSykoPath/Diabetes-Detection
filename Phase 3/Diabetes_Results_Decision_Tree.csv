@@ -1,0 +1,2 @@
+Diabetes_0_Precision,Diabetes_1_Precision,Diabetes_2_Precision,Diabetes_0_Recall,Diabetes_1_Recall,Diabetes_2_Recall,Diabetes_0_F1,Diabetes_1_F1,Diabetes_2_F1,Diabetes_Accuracy,Diabetes_AUC
+0.8620393378166018,0.0,0.5714345634921809,0.9803136354624005,0.0,0.17166484520207884,0.9173741740749671,0.0,0.2633395836239366,0.8497516556291391,0.7870915914217299

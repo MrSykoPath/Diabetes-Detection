@@ -1,8 +1,6 @@
-Diabetes_012
 HighBP
 HighChol
 CholCheck
-BMI
 Smoker
 Stroke
 HeartDiseaseorAttack
@@ -14,6 +12,12 @@ AnyHealthcare
 NoDocbcCost
 DiffWalk
 Sex
+Underweight
+Healthy Weight
+Overweight
+Class 1 Obesity
+Class 2 Obesity
+Class 3 Obesity
 Excellent General Health
 Very Good General Health
 Good General Health

@@ -122,21 +122,26 @@ class NN:
         epsilon = 1e-8  # to avoid log(0)
         yhat = np.clip(yhat, epsilon, 1 - epsilon)
         
+        alpha_t = y * alpha + (1 - y) * (1 - alpha)
         pt = y * yhat + (1 - y) * (1 - yhat)
-        loss = -alpha * (1 - pt) ** gamma * np.log(pt)
+        loss = -alpha_t * (1 - pt) ** gamma * np.log(pt)
         return np.mean(loss)
+
 
     def _diff_focal_loss(self, y, yhat, gamma=2, alpha=0.25):
         epsilon = 1e-8
         yhat = np.clip(yhat, epsilon, 1 - epsilon)
 
         pt = y * yhat + (1 - y) * (1 - yhat)
-        dpt = y * 1 + (1 - y) * (-1)
+        dpt = y * 1 + (1 - y) * (-1)  # Derivative of pt w.r.t. yhat
 
-        grad = -alpha * gamma * (1 - pt) ** (gamma - 1) * np.log(pt) * dpt \
-               - alpha * (1 - pt) ** gamma * dpt / pt
+        alpha_t = y * alpha + (1 - y) * (1 - alpha)
+
+        grad = -alpha_t * gamma * (1 - pt) ** (gamma - 1) * np.log(pt) * dpt \
+            - alpha_t * (1 - pt) ** gamma * dpt / pt
 
         return grad
+
 
 
     #########

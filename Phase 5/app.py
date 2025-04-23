@@ -103,6 +103,31 @@ class Layer:
         self.dW= np.zeros_like(self.W)
         self.db= np.zeros_like(self.b)
 #########################################################################################################
+
+class DropoutLayer:
+    def __init__(self, dropout_rate):
+        self.dropout_rate = dropout_rate
+        self.mask = None
+        self.Ai = None
+        self.training = True  # default to training mode
+
+    def forward(self, Ai):
+        # Training phase: Apply dropout mask
+        if self.training:
+            self.mask = (np.random.rand(*Ai.shape) > self.dropout_rate).astype(float)
+            return Ai * self.mask
+        else:
+            return Ai  # No dropout during inference
+
+    def backward(self, inp):
+        # During backprop, apply the same mask
+        return inp * self.mask if self.training else inp
+
+    def zeroing_delta(self):
+        pass  # Dropout has no weights to update
+
+
+#########################################################################################################
 class NN:
 
     ########
@@ -153,13 +178,12 @@ class NN:
 
 
 
-    def forward(self,inp):
-        a=inp
-#         print(a.shape)
+    def forward(self, inp, training=True):
+        a = inp
         for layer in self.layers:
+            if isinstance(layer, DropoutLayer):
+                layer.training = training  # Set training mode per forward pass
             a = layer.forward(a)
-#             print(a.shape)
-
         return a
 
     def backward(self,input):
@@ -167,8 +191,12 @@ class NN:
         for layer in self.layers[::-1]:
             gd = layer.backward(gd)
 
-    def add_layer(self,n_input,n_output, activation="identity",name=None):
-        self.layers.append(Layer(n_input,n_output, activation=activation,name=name))
+    def add_layer(self, n_input=None, n_output=None, activation="identity", name=None, dropout=None):
+        if dropout is not None:
+            self.layers.append(DropoutLayer(dropout))
+        else:
+            self.layers.append(Layer(n_input, n_output, activation=activation, name=name))
+
 
     def fit(self, x_train,y_train, epochs=5): #data dim is MxN .. M no of examples.. N no of dimension
 
@@ -213,9 +241,9 @@ class NN:
 
     def predict(self,x_test): #data dim is NxD .. N no of examples.. D no of dimension
 #         print(x_test.shape)
-        y_hat= self.forward(x_test.T)
-        print(y_hat.shape)
+        y_hat = self.forward(x_test.T, training=False)  # Disable dropout
         return y_hat.T
+
 
 
 
@@ -248,12 +276,33 @@ def check_data(data):
 # References the file
 app = Flask(__name__)
 columns = []
-model = NN()
 prediction_count = 0
 lock = threading.Lock()
 model_lock = threading.Lock()
 new_data_file = 'new_data.csv'
 new_data = []
+
+df = pd.read_csv('Phase 2 data.csv')
+columns = initialize_columns()
+
+# Load persisted new data
+if os.path.exists(new_data_file):
+    new_df = pd.read_csv(new_data_file)
+    df = pd.concat([df, new_df], ignore_index=True, sort=False)
+
+y = df['Diabetes_binary']
+X = df.drop(['Diabetes_binary'],axis=1)
+
+model = NN(lr=0.01)
+model.add_layer(n_input=X.shape[1], n_output=192, activation='sigmoid')  # Dense(192)
+model.add_layer(dropout=0.5)                                             # Dropout
+model.add_layer(n_input=192, n_output=64, activation='sigmoid')         # Dense(64)
+model.add_layer(dropout=0.5)                                             # Dropout
+model.add_layer(n_input=64, n_output=48, activation='sigmoid')          # Dense(48)
+model.add_layer(dropout=0.5)                                             # Dropout
+model.add_layer(n_input=48, n_output=1, activation='sigmoid')           # Dense(1)
+
+model.fit(X,y)
 
 
 @app.route('/predict', methods=['POST'])
@@ -275,8 +324,7 @@ def predict():
         new_sample = [1.0 if prediction == "Diabetic or Prediabetic" else 0.0] + x
         new_data.append(new_sample)
 
-        # Save to disk
-        pd.DataFrame(new_data, columns=list(X.columns) + ['Diabetes_binary']).to_csv(new_data_file, index=False)
+
 
         prediction_count += 1
 
@@ -284,19 +332,21 @@ def predict():
             prediction_count = 0
             # Retrain the model using original + new data
             with model_lock:
-                df = pd.read_csv('Phase 2 data.csv')
+                
+                # Save to disk
+                df_additional = pd.DataFrame(new_data, columns= list(df.columns))
+                new_df = new_df.concat([new_df,df_additional],ignore_index = True, sort = False)
+                new_df.to_csv(new_data_file, index=False)
+
+                # Add to total dataframe
+                df = df.concat([df,df_additional],ignore_index = True, sort = False)
+                
                 y = df['Diabetes_binary']
                 X = df.drop(['Diabetes_binary'], axis=1)
 
-                # Create DataFrame from new_data
-                new_df = pd.DataFrame(new_data, columns=list(X.columns) + ['Diabetes_binary'])
+                new_data = []
 
-                # Combine original and new data
-                combined_df = pd.concat([df, new_df], ignore_index=True)
-                y_new = combined_df['Diabetes_binary']
-                X_new = combined_df.drop(['Diabetes_binary'], axis=1)
-
-                model = NN().fit(X_new, y_new)
+                model = NN().fit(X, y)
 
     return jsonify({'prediction': result}), 200
 
@@ -305,15 +355,6 @@ def predict():
 
 
 if __name__ == "__main__":
-    df = pd.read_csv('Phase 2 data.csv')
-    y = df['Diabetes_binary']
-    X = df.drop(['Diabetes_binary'],axis=1)
-    model.fit(X,y)
-    columns = initialize_columns()
-
-    # Load persisted new data
-    if os.path.exists(new_data_file):
-        new_df = pd.read_csv(new_data_file)
-        new_data = new_df.values.tolist()
+    
 
     app.run(debug=True)

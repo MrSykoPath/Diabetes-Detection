@@ -4,7 +4,7 @@ import { Link } from "@heroui/link";
 import clsx from "clsx";
 
 import { Providers } from "./providers";
-
+import Icon from "@/components/patient.png";
 import { siteConfig } from "@/config/site";
 import { fontSans } from "@/config/fonts";
 import { Navbar } from "@/components/navbar";
@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   },
   description: siteConfig.description,
   icons: {
-    icon: "/favicon.ico",
+    icon: "/patient.png", //<a href="https://www.flaticon.com/free-icons/patient" title="patient icons">Patient icons created by RaftelDesign - Flaticon</a>
   },
 };
 

@@ -144,26 +144,34 @@ class NN:
     
 
     def focal_loss(self, y, yhat, gamma=2, alpha=0.25):
-        epsilon = 1e-8  # to avoid log(0)
+        epsilon = 1e-7  # Slightly larger to avoid log(0)
         yhat = np.clip(yhat, epsilon, 1 - epsilon)
-        
-        alpha_t = y * alpha + (1 - y) * (1 - alpha)
+
         pt = y * yhat + (1 - y) * (1 - yhat)
+        pt = np.clip(pt, epsilon, 1 - epsilon)  # extra safety
+
+        alpha_t = y * alpha + (1 - y) * (1 - alpha)
         loss = -alpha_t * (1 - pt) ** gamma * np.log(pt)
+
         return np.mean(loss)
 
 
     def _diff_focal_loss(self, y, yhat, gamma=2, alpha=0.25):
-        epsilon = 1e-8
+        epsilon = 1e-7
         yhat = np.clip(yhat, epsilon, 1 - epsilon)
 
         pt = y * yhat + (1 - y) * (1 - yhat)
-        dpt = y * 1 + (1 - y) * (-1)  # Derivative of pt w.r.t. yhat
+        pt = np.clip(pt, epsilon, 1 - epsilon)
+
+        dpt = y - (1 - y)  # 1 if y==1 else -1
 
         alpha_t = y * alpha + (1 - y) * (1 - alpha)
 
-        grad = -alpha_t * gamma * (1 - pt) ** (gamma - 1) * np.log(pt) * dpt \
-            - alpha_t * (1 - pt) ** gamma * dpt / pt
+        log_pt = np.log(pt)
+        grad = -alpha_t * (
+            gamma * (1 - pt) ** (gamma - 1) * log_pt * dpt +
+            (1 - pt) ** gamma * dpt / pt
+        )
 
         return grad
 
@@ -239,8 +247,9 @@ class NN:
 
 
 
-    def predict(self,x_test): #data dim is NxD .. N no of examples.. D no of dimension
-#         print(x_test.shape)
+    def predict(self, x_test):  # data dim is NxD .. N no of examples.. D no of dimension
+        if isinstance(x_test, pd.DataFrame):
+            x_test = x_test.to_numpy()  # Convert DataFrame to NumPy array
         y_hat = self.forward(x_test.T, training=False)  # Disable dropout
         return y_hat.T
 
@@ -307,24 +316,27 @@ model.fit(X,y)
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    global prediction_count, model, new_data
+    global prediction_count, model, new_data, df, new_df
     data = request.get_json()
-    data_local = json.loads(data)
 
-    if not check_data(data_local):
+    # Validate the input data
+    if not check_data(data):
         return jsonify({'error': 'Error in Data'}), 400
 
-    x = make_list(data_local)
-    prediction = model.predict(x)
+    # Convert the input data (list) into a DataFrame
+    x = make_list(data)
+    x_df = pd.DataFrame([x], columns=columns)  # Create a DataFrame with the correct column names
 
-    result = "Diabetic or Prediabetic" if prediction == 1.0 else "Not Diabetic"
+    # Make a prediction
+    prediction = model.predict(x_df)
+
+    # Interpret the prediction result
+    result = "Diabetic or Prediabetic" if prediction[0][0] >= 0.5 else "Not Diabetic"
 
     # Add new sample for retraining
     with lock:
-        new_sample = [1.0 if prediction == "Diabetic or Prediabetic" else 0.0] + x
+        new_sample = [1.0 if result == "Diabetic or Prediabetic" else 0.0] + x
         new_data.append(new_sample)
-
-
 
         prediction_count += 1
 
@@ -332,21 +344,29 @@ def predict():
             prediction_count = 0
             # Retrain the model using original + new data
             with model_lock:
-                
-                # Save to disk
-                df_additional = pd.DataFrame(new_data, columns= list(df.columns))
-                new_df = new_df.concat([new_df,df_additional],ignore_index = True, sort = False)
+                # Save new data to disk
+                df_additional = pd.DataFrame(new_data, columns=df.columns)
+                new_df = pd.concat([new_df, df_additional], ignore_index=True, sort=False)
                 new_df.to_csv(new_data_file, index=False)
 
-                # Add to total dataframe
-                df = df.concat([df,df_additional],ignore_index = True, sort = False)
-                
+                # Add new data to the main DataFrame
+                df = pd.concat([df, df_additional], ignore_index=True, sort=False)
+
+                # Prepare data for retraining
                 y = df['Diabetes_binary']
                 X = df.drop(['Diabetes_binary'], axis=1)
 
+                # Clear new data and retrain the model
                 new_data = []
-
-                model = NN().fit(X, y)
+                model = NN(lr=0.01)  # Reinitialize the model
+                model.add_layer(n_input=X.shape[1], n_output=192, activation='sigmoid')
+                model.add_layer(dropout=0.5)
+                model.add_layer(n_input=192, n_output=64, activation='sigmoid')
+                model.add_layer(dropout=0.5)
+                model.add_layer(n_input=64, n_output=48, activation='sigmoid')
+                model.add_layer(dropout=0.5)
+                model.add_layer(n_input=48, n_output=1, activation='sigmoid')
+                model.fit(X, y)
 
     return jsonify({'prediction': result}), 200
 

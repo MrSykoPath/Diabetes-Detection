@@ -222,11 +222,11 @@ class NN:
             self.backward(dl_dyhat)
 
             # update using GD
-            for i in range(len(self.layers)):
-                # layers[i].dW=layers[i].dW/N
-                # layers[i].db=layers[i].db/N
-                self.layers[i].W = self.layers[i].W - self.alpha * (self.layers[i].dW/M)
-                self.layers[i].b = self.layers[i].b - self.alpha * (self.layers[i].db/M)
+            for layer in self.layers:
+                if isinstance(layer, Layer):  # Only update if it's a trainable layer
+                    layer.W = layer.W - self.alpha * (layer.dW / M)
+                    layer.b = layer.b - self.alpha * (layer.db / M)
+
 
 
             # zeroing deltas

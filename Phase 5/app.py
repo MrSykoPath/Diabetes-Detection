@@ -424,6 +424,8 @@ lock = threading.Lock()
 model_lock = threading.Lock()
 new_data_file = 'new_data.csv'
 new_data = [] # This will store new samples as lists before appending to df
+new_X = [] # This will store new samples as lists before appending to df
+new_y = [] # This will store new samples as lists before appending to df
 
 
 # Load initial data
@@ -530,7 +532,7 @@ model.fit(X,y, epochs=10) # Increased epochs for initial training
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    global prediction_count, model, new_data, df, new_df, columns
+    global prediction_count, model, new_data, df, new_df, columns, new_X
     data = request.get_json()
 
     # Validate the input data
@@ -561,24 +563,15 @@ def predict():
     # Add new sample for retraining
     with lock:
 
-        df_feature_columns = [col for col in df.columns]
+        df_feature_columns = [col for col in df.columns if col.strip() != 'Diabetes_binary']
         
         ordered_feature_values = [data.get(col.strip(), 0) for col in df_feature_columns]
 
 
         new_sample_row = ordered_feature_values
-        new_data.append(new_sample_row)
+        new_X.append(new_sample_row)
 
-        prediction_count += 1
-
-        # Check if retraining threshold is met
-        if prediction_count >= 10:
-            prediction_count = 0
-
-            # Retrain the model using original + new data
-            # Use model_lock during retraining to prevent predictions
-
-            model.update_weights(new_data) # Update model weights with new data
+        
             # with model_lock:
             #     print("Retraining model...")
             #     # Create a DataFrame from accumulated new_data, using the columns from the main df
@@ -668,6 +661,57 @@ def predict():
 
     return jsonify({'prediction': result, 'probability': float(result_probability)}), 200
 
+@app.route('/add_feedback', methods=['POST'])
+def add_feedback():
+    global prediction_count, model, new_data, df, new_df, columns, new_X, new_y
+
+    data = request.get_json()
+
+    # Ask the user for feedback (diabetic or not)
+    feedback = data.get('Diabetes_binary')
+    if feedback not in [0, 1]:
+        return jsonify({'error': 'Feedback must be 0 (Not Diabetic) or 1 (Prediabetic or Diabetic)'}), 400
+
+    global new_y
+    new_y.append(feedback)
+    
+
+    # Convert the input data (dictionary) into a DataFrame row
+    try:
+        # Ensure the order of data matches the columns defined
+        new_sample_row = [new_y[-1]] + new_X[-1]   # Combine the latest feature values and feedback
+        new_X = []
+        new_y = [] # Reset new_y after using it
+
+        # Add the new sample to the new_data list
+        with lock:
+            new_data.append(new_sample_row)
+
+            prediction_count += 1
+
+            # Check if retraining threshold is met
+            if prediction_count >= 1:
+                prediction_count = 0
+
+                # Retrain the model using original + new data
+                # Use model_lock during retraining to prevent predictions
+
+                model.update_weights(new_data) # Update model weights with new data
+
+        # Save the new sample to the CSV file
+        try:
+            write_header = not os.path.exists(new_data_file) or os.stat(new_data_file).st_size == 0
+            new_sample_df = pd.DataFrame([new_sample_row], columns=df.columns)
+            new_sample_df.to_csv(new_data_file, mode='a', header=write_header, index=False)
+            print(f"Appended new feedback row to {new_data_file}.")
+        except Exception as e:
+            print(f"Error saving new feedback to CSV: {e}")
+            return jsonify({'error': 'Failed to save feedback to file'}), 500
+
+        return jsonify({'message': 'Feedback added successfully'}), 200
+
+    except Exception as e:
+        return jsonify({'error': f'Error processing feedback: {e}'}), 400
 
 if __name__ == "__main__":
     # Initial training happens here when the script is run directly

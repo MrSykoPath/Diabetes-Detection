@@ -318,6 +318,56 @@ class NN:
         print("Finished....")
 
 
+    def update_weights(self, new_data_points):
+        global model, df, new_data_file, columns
+
+        # Convert new data points to a DataFrame
+        try:
+            new_data_df = pd.DataFrame(new_data_points, columns=df.columns)
+        except Exception as e:
+            print(f"Error creating DataFrame from new data points: {e}")
+            return
+
+        # Append new data to the main DataFrame
+        df = pd.concat([df, new_data_df], ignore_index=True)
+
+        # Save new data to the CSV file
+        try:
+            write_header = not os.path.exists(new_data_file) or os.stat(new_data_file).st_size == 0
+            new_data_df.to_csv(new_data_file, mode='a', header=write_header, index=False)
+            print(f"Appended {len(new_data_df)} new rows to {new_data_file}.")
+        except Exception as e:
+            print(f"Error saving new data to CSV: {e}")
+
+        # Prepare new data for incremental update
+        if 'Diabetes_binary' in new_data_df.columns:
+            y_new = new_data_df['Diabetes_binary']
+            expected_feature_columns = [c.strip() for c in columns if c.strip() != 'Diabetes_binary']
+            X_new = new_data_df[expected_feature_columns]
+
+            # Update the model weights incrementally
+            with model_lock:
+                print("Updating weights incrementally with new data...")
+                y_new = y_new.values.reshape(1, -1)  # Ensure correct shape
+                X_new = X_new.values.T  # Transpose for compatibility with the model
+                y_hat = model.forward(X_new)
+                loss_gradient = model._diff_focal_loss(y_new, y_hat)
+                model.backward(loss_gradient)
+
+                # Update weights using gradients from the new data
+                for layer in model.layers:
+                    if isinstance(layer, Layer):  # Only update trainable layers
+                        layer.W -= model.alpha * (layer.dW / X_new.shape[1])
+                        layer.b -= model.alpha * (layer.db / X_new.shape[1])
+
+                # Zero out gradients after update
+                for layer in model.layers:
+                    layer.zeroing_delta()
+
+                print("Weights updated incrementally with new data.")
+        else:
+            print("Error: 'Diabetes_binary' column not found in the new data. Skipping weight update.")
+
     def predict(self, x_test):  # data dim is NxD .. N no of examples.. D no of dimension
         # Convert input to NumPy array immediately
         x_test = np.asarray(x_test)
@@ -511,12 +561,12 @@ def predict():
     # Add new sample for retraining
     with lock:
 
-        df_feature_columns = [col for col in df.columns if col != 'Diabetes_binary']
+        df_feature_columns = [col for col in df.columns]
         
         ordered_feature_values = [data.get(col.strip(), 0) for col in df_feature_columns]
 
 
-        new_sample_row = [1.0 if result == "Diabetic or Prediabetic" else 0.0] + ordered_feature_values
+        new_sample_row = ordered_feature_values
         new_data.append(new_sample_row)
 
         prediction_count += 1
@@ -527,91 +577,93 @@ def predict():
 
             # Retrain the model using original + new data
             # Use model_lock during retraining to prevent predictions
-            with model_lock:
-                print("Retraining model...")
-                # Create a DataFrame from accumulated new_data, using the columns from the main df
-                try:
-                    # Ensure the columns match the format expected by the CSV (including Diabetes_binary)
-                    df_additional = pd.DataFrame(new_data, columns=df.columns)
-                except Exception as e:
-                    print(f"Error creating DataFrame from new_data during retraining: {e}")
-                    # Clear new_data and return to prevent further issues with potentially malformed data
-                    new_data = []
-                    # Log the error and potentially alert, but allow prediction to continue with old model
-                    return jsonify({'prediction': result, 'probability': float(result_probability), 'warning': 'Error processing new data for retraining.'}), 200
+
+            model.update_weights(new_data) # Update model weights with new data
+            # with model_lock:
+            #     print("Retraining model...")
+            #     # Create a DataFrame from accumulated new_data, using the columns from the main df
+            #     try:
+            #         # Ensure the columns match the format expected by the CSV (including Diabetes_binary)
+            #         df_additional = pd.DataFrame(new_data, columns=df.columns)
+            #     except Exception as e:
+            #         print(f"Error creating DataFrame from new_data during retraining: {e}")
+            #         # Clear new_data and return to prevent further issues with potentially malformed data
+            #         new_data = []
+            #         # Log the error and potentially alert, but allow prediction to continue with old model
+            #         return jsonify({'prediction': result, 'probability': float(result_probability), 'warning': 'Error processing new data for retraining.'}), 200
 
 
-                # Save new data to disk - append mode
-                try:
-                    # Check if file exists to write header only once
-                    write_header = not os.path.exists(new_data_file) # Write header if file doesn't exist
-                    # If file exists but is empty, also write header
-                    if os.path.exists(new_data_file) and os.stat(new_data_file).st_size == 0:
-                         write_header = True
+            #     # Save new data to disk - append mode
+            #     try:
+            #         # Check if file exists to write header only once
+            #         write_header = not os.path.exists(new_data_file) # Write header if file doesn't exist
+            #         # If file exists but is empty, also write header
+            #         if os.path.exists(new_data_file) and os.stat(new_data_file).st_size == 0:
+            #              write_header = True
 
-                    # Append the additional data. Ensure columns match df for consistent saving.
-                    df_additional[df.columns].to_csv(new_data_file, mode='a', header=write_header, index=False)
-                    print(f"Appended {len(df_additional)} new rows to {new_data_file}.")
+            #         # Append the additional data. Ensure columns match df for consistent saving.
+            #         df_additional[df.columns].to_csv(new_data_file, mode='a', header=write_header, index=False)
+            #         print(f"Appended {len(df_additional)} new rows to {new_data_file}.")
 
-                except Exception as e:
-                    print(f"Error saving new data to csv during retraining: {e}")
-                    # Log the error. Retraining will proceed with data loaded from files below.
-
-
-                try:
-                    # Reload ALL data from scratch for retraining to ensure consistency
-                    temp_df = pd.read_csv('Phase 2 data.csv')
-                    if os.path.exists(new_data_file):
-                         temp_new_df = pd.read_csv(new_data_file)
-                         # Check if columns match before concatenating reloaded data
-                         if list(temp_new_df.columns) == list(temp_df.columns):
-                             temp_df = pd.concat([temp_df, temp_new_df], ignore_index=True, sort=False)
-                             print(f"Retraining data includes {len(temp_new_df)} rows from {new_data_file}.")
-                         else:
-                             print("Warning: Columns in reloaded new_data.csv mismatch main data. Skipping append for retraining.")
+            #     except Exception as e:
+            #         print(f"Error saving new data to csv during retraining: {e}")
+            #         # Log the error. Retraining will proceed with data loaded from files below.
 
 
-                    # Prepare data for retraining from the reloaded temp_df
-                    if 'Diabetes_binary' in temp_df.columns:
-                        y_retrain = temp_df['Diabetes_binary']
-                        # Ensure X_retrain uses the correct feature columns
-                        expected_feature_columns_local = [c.strip() for c in columns if c.strip() != 'Diabetes_binary']
-                        # Verify all expected columns are present in temp_df before selecting
-                        if all(col in temp_df.columns for col in expected_feature_columns_local):
-                             X_retrain = temp_df[expected_feature_columns_local]
-                             df = temp_df # Update the global df reference
-
-                             # Clear new data after successful saving/reloading for retraining
-                             new_data = []
-
-
-                             # Reinitialize and train the model
-                             # Using the adjusted learning rate
-                             model = NN(lr=0.00005)
-                             # Changed hidden layer activations to ReLU for retraining as well
-                             model.add_layer(n_input=X_retrain.shape[1], n_output=192, activation='relu')
-                             model.add_layer(dropout=0.5)
-                             model.add_layer(n_input=192, n_output=64, activation='relu')
-                             model.add_layer(dropout=0.5)
-                             model.add_layer(n_input=64, n_output=48, activation='relu')
-                             model.add_layer(dropout=0.5)
-                             model.add_layer(n_input=48, n_output=1, activation='sigmoid') # Output layer remains sigmoid
-                             # *** Use Focal Loss for retraining as well ***
-                             model.fit(X_retrain, y_retrain, epochs=5) # Reduced epochs for retraining
-                             print("Retraining complete.")
-                        else:
-                             missing_retrain_cols = [col for col in expected_feature_columns_local if col not in temp_df.columns]
-                             print(f"Error: Missing expected feature columns for retraining: {missing_retrain_cols}. Skipping retraining.")
+            #     try:
+            #         # Reload ALL data from scratch for retraining to ensure consistency
+            #         temp_df = pd.read_csv('Phase 2 data.csv')
+            #         if os.path.exists(new_data_file):
+            #              temp_new_df = pd.read_csv(new_data_file)
+            #              # Check if columns match before concatenating reloaded data
+            #              if list(temp_new_df.columns) == list(temp_df.columns):
+            #                  temp_df = pd.concat([temp_df, temp_new_df], ignore_index=True, sort=False)
+            #                  print(f"Retraining data includes {len(temp_new_df)} rows from {new_data_file}.")
+            #              else:
+            #                  print("Warning: Columns in reloaded new_data.csv mismatch main data. Skipping append for retraining.")
 
 
-                    else:
-                         print("Error: 'Diabetes_binary' column not found after reloading data for retraining. Skipping retraining.")
+            #         # Prepare data for retraining from the reloaded temp_df
+            #         if 'Diabetes_binary' in temp_df.columns:
+            #             y_retrain = temp_df['Diabetes_binary']
+            #             # Ensure X_retrain uses the correct feature columns
+            #             expected_feature_columns_local = [c.strip() for c in columns if c.strip() != 'Diabetes_binary']
+            #             # Verify all expected columns are present in temp_df before selecting
+            #             if all(col in temp_df.columns for col in expected_feature_columns_local):
+            #                  X_retrain = temp_df[expected_feature_columns_local]
+            #                  df = temp_df # Update the global df reference
+
+            #                  # Clear new data after successful saving/reloading for retraining
+            #                  new_data = []
 
 
-                except Exception as e:
-                    print(f"Critical Error during retraining data load or model fit: {e}")
-                    # If retraining fails critically, the model remains the old one.
-                    # A production system would need a more robust strategy (e.g., alerting, fallback model).
+            #                  # Reinitialize and train the model
+            #                  # Using the adjusted learning rate
+            #                  model = NN(lr=0.00005)
+            #                  # Changed hidden layer activations to ReLU for retraining as well
+            #                  model.add_layer(n_input=X_retrain.shape[1], n_output=192, activation='relu')
+            #                  model.add_layer(dropout=0.5)
+            #                  model.add_layer(n_input=192, n_output=64, activation='relu')
+            #                  model.add_layer(dropout=0.5)
+            #                  model.add_layer(n_input=64, n_output=48, activation='relu')
+            #                  model.add_layer(dropout=0.5)
+            #                  model.add_layer(n_input=48, n_output=1, activation='sigmoid') # Output layer remains sigmoid
+            #                  # *** Use Focal Loss for retraining as well ***
+            #                  model.fit(X_retrain, y_retrain, epochs=5) # Reduced epochs for retraining
+            #                  print("Retraining complete.")
+            #             else:
+            #                  missing_retrain_cols = [col for col in expected_feature_columns_local if col not in temp_df.columns]
+            #                  print(f"Error: Missing expected feature columns for retraining: {missing_retrain_cols}. Skipping retraining.")
+
+
+            #         else:
+            #              print("Error: 'Diabetes_binary' column not found after reloading data for retraining. Skipping retraining.")
+
+
+            #     except Exception as e:
+            #         print(f"Critical Error during retraining data load or model fit: {e}")
+            #         # If retraining fails critically, the model remains the old one.
+            #         # A production system would need a more robust strategy (e.g., alerting, fallback model).
 
 
     return jsonify({'prediction': result, 'probability': float(result_probability)}), 200

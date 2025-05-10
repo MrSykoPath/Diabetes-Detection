@@ -8,6 +8,18 @@ import pandas as pd
 import threading
 import os
 import time # Added for timestamp in backup file name
+# Add new imports at the top
+from imblearn.over_sampling import SMOTE
+from collections import Counter
+import pickle
+
+def save_model(model, filename='saved_model.pkl'):
+    with open(filename, 'wb') as f:
+        pickle.dump(model, f)
+
+def load_model(filename='saved_model.pkl'):
+    with open(filename, 'rb') as f:
+        return pickle.load(f)
 
 
 class Layer:
@@ -99,7 +111,7 @@ class Layer:
 
         # Keep Clipping for the intermediate gradient 'tmp' as a safeguard
         # Adjust clipping range if needed, maybe slightly wider for ReLU initially
-        tmp = np.clip(tmp, -1.0, 1.0)
+        tmp = np.clip(tmp, -50.0, 50.0)
 
         # Calculate dW and db, accumulated across the batch
         bet = tmp @ self.Ai.T
@@ -168,41 +180,38 @@ class NN:
         return (yhat-y)
 
 
-    def focal_loss(self, y, yhat, gamma=2, alpha=0.25):
-        # Ensure inputs are NumPy arrays
-        y = np.asarray(y)
-        yhat = np.asarray(yhat)
-        epsilon = 1e-7  # Slightly larger to avoid log(0)
-        yhat = np.clip(yhat, epsilon, 1 - epsilon)
-
-        pt = y * yhat + (1 - y) * (1 - yhat)
-        pt = np.clip(pt, epsilon, 1 - epsilon)  # extra safety
-
-        alpha_t = y * alpha + (1 - y) * (1 - alpha)
-        loss = -alpha_t * (1 - pt) ** gamma * np.log(pt + epsilon)
-
-        return np.mean(loss)
-
-
-    def _diff_focal_loss(self, y, yhat, gamma=2, alpha=0.25):
-        # Ensure inputs are NumPy arrays
+    # Modified focal loss with dynamic class weighting
+    def focal_loss(self, y, yhat, gamma=2, alpha=None):
         y = np.asarray(y)
         yhat = np.asarray(yhat)
         epsilon = 1e-7
         yhat = np.clip(yhat, epsilon, 1 - epsilon)
+        
+        # Auto-balance if alpha not specified
+        if alpha is None:
+            alpha = np.mean(y)  # Positive class ratio
+        
+        alpha_t = y * alpha + (1 - y) * (1 - alpha)
+        pt = y * yhat + (1 - y) * (1 - yhat)
+        loss = -alpha_t * (1 - pt)**gamma * np.log(pt + epsilon)
+        return np.mean(loss)
 
+    # Modified _diff_focal_loss
+    def _diff_focal_loss(self, y, yhat, gamma=2, alpha=None):
+        y = np.asarray(y)
+        yhat = np.asarray(yhat)
+        epsilon = 1e-7
+        yhat = np.clip(yhat, epsilon, 1 - epsilon)
+        
+        if alpha is None:
+            alpha = np.mean(y)
+        
         pt = y * yhat + (1 - y) * (1 - yhat)
         alpha_t = y * alpha + (1 - y) * (1 - alpha)
-
-        
-        dpt = yhat - y 
-        grad = alpha_t * gamma * ((1 - pt) ** (gamma - 1)) * (-np.log(pt + epsilon)) * dpt \
-             + alpha_t * ((1 - pt) ** gamma) * dpt / (pt + epsilon) 
-
-        # Add clipping to the final gradient as it can still become large
-        grad = np.clip(grad, -10.0, 10.0) 
-
-        return grad
+        dpt = yhat - y
+        grad = alpha_t * gamma * ((1 - pt)**(gamma-1)) * (-np.log(pt + epsilon)) * dpt \
+            + alpha_t * ((1 - pt)**gamma) * dpt / (pt + epsilon)
+        return np.clip(grad, -50.0, 50.0)
 
 
     def binary_cross_entropy(self, y, yhat):
@@ -262,61 +271,49 @@ class NN:
             self.layers.append(Layer(n_input, n_output, activation=activation, name=name))
 
 
-    def fit(self, x_train,y_train, epochs=5): #data dim is MxN .. M no of examples.. N no of dimension
+    
 
-        M = x_train.shape[0]
-
-        # Convert initial training data to NumPy arrays immediately
-        x_train = np.asarray(x_train).T
+    # Modified fit() method in NN class
+    def fit(self, x_train, y_train, epochs=5, apply_smote=True):
+        # Convert to numpy arrays immediately
+        x_train = np.asarray(x_train).T  # Original shape (features, samples)
         y_train = np.asarray(y_train).T
 
+        # Reshape for SMOTE (samples, features)
+        x_train = x_train.T
+        y_train = y_train.ravel().astype(int)  # Ensure y_train is of type int
+        
+        if apply_smote:
+            # Apply SMOTE only to training data
+            print(f"Class distribution before SMOTE: {Counter(y_train)}")
+            sm = SMOTE(sampling_strategy='auto', k_neighbors=5, random_state=42)
+            x_train, y_train = sm.fit_resample(x_train, y_train)
+            print(f"Class distribution after SMOTE: {Counter(y_train)}")
+        
+        # Transpose back to (features, samples) for model
+        x_train = x_train.T
+        y_train = y_train.reshape(1, -1)
 
+        M = x_train.shape[1]  # Number of samples
+        
+        # Calculate class weights dynamically
+        class_counts = np.bincount(y_train.ravel())
+        alpha = class_counts[0] / (class_counts[0] + class_counts[1])
+        
         for i in range(epochs):
-            print("Epoche {}/{}".format(i+1,epochs))
-
             y_hat = self.forward(x_train)
-            print(f"y_hat stats - min: {np.min(y_hat)}, max: {np.max(y_hat)}")
-
-            # *** Use Focal Loss instead of Binary Cross-Entropy ***
-            loss = self.focal_loss(y_train, y_hat) # Using default gamma=2, alpha=0.25
-            print(f"Loss: {loss:.4f}")
-
-            # *** Use the derivative of Focal Loss ***
-            dl_dyhat = self._diff_focal_loss(y_train, y_hat)
-
-            if np.any(np.isnan(y_hat)):
-                print("NaN detected in y_hat")
-            if np.any(np.isnan(dl_dyhat)):
-                print("NaN detected in gradient")
-
-
+            loss = self.focal_loss(y_train, y_hat, alpha=alpha)
+            dl_dyhat = self._diff_focal_loss(y_train, y_hat, alpha=alpha)
+            
+            # Rest of original training loop remains the same
             self.backward(dl_dyhat)
-
-
-            # update using GD
+            
+            # Weight update with gradient clipping
             for layer in self.layers:
-                if isinstance(layer, Layer):  # Only update if it's a trainable layer
-                     # dW and db were accumulated across the batch in backward
-                     # Divide by M here to get the average gradient for the batch update
-                    layer.W = layer.W - self.alpha * (layer.dW / M)
-                    layer.b = layer.b - self.alpha * (layer.db / M)
-
-
-
-            # zeroing deltas for the next epoch
-            for layer in self.layers:
-                layer.zeroing_delta()
-
-            # Check for NaNs after updates
-            for idx, layer in enumerate(self.layers):
                 if isinstance(layer, Layer):
-                    if np.any(np.isnan(layer.W)) or np.any(np.isnan(layer.b)):
-                        print(f"NaN in weights of layer {idx} after update")
-                        # *** Added exit here to stop execution immediately upon detecting NaN ***
-                        # exit() # Keep this commented out unless you want it to stop hard on NaN
-
-
-        print("Finished....")
+                    layer.W -= self.alpha * np.clip(layer.dW/M, -1e5, 1e5)
+                    layer.b -= self.alpha * np.clip(layer.db/M, -1e5, 1e5)
+                    layer.zeroing_delta()
 
 
     def update_weights(self, new_data_points):
@@ -342,7 +339,7 @@ class NN:
 
         # Prepare new data for incremental update
         if 'Diabetes_binary' in new_data_df.columns:
-            y_new = new_data_df['Diabetes_binary']
+            y_new = new_data_df['Diabetes_binary'].astype(int)  # Ensure y_new is of type int
             expected_feature_columns = [c.strip() for c in columns if c.strip() != 'Diabetes_binary']
             X_new = new_data_df[expected_feature_columns]
 
@@ -516,20 +513,24 @@ else:
     exit()
 
 
-# Initialize and train the model
-# Using the reduced learning rate and ReLU for hidden layers
-model = NN(lr=0.00005)
-# Changed hidden layer activations to ReLU
-model.add_layer(n_input=X.shape[1], n_output=192, activation='relu')  # Dense(192) - Changed to ReLU
-model.add_layer(dropout=0.5)                                             # Dropout
-model.add_layer(n_input=192, n_output=64, activation='relu')          # Dense(64) - Changed to ReLU
-model.add_layer(dropout=0.5)                                             # Dropout
-model.add_layer(n_input=64, n_output=48, activation='relu')           # Dense(48) - Changed to ReLU
-model.add_layer(dropout=0.5)                                             # Dropout
-model.add_layer(n_input=48, n_output=1, activation='sigmoid')            # Dense(1) - Output layer (Sigmoid)
+model_filename = 'saved_model.pkl'
+if os.path.exists(model_filename):
+    print(f"Loading model from {model_filename}")
+    model = load_model(model_filename)
+else:
+    print("No saved model found. Initializing and training a new model.")
+    model = NN(lr=0.000005)
+    model.add_layer(n_input=X.shape[1], n_output=192, activation='relu')  # Dense layer
+    model.add_layer(dropout=0.5)  # Dropout layer
+    model.add_layer(n_input=192, n_output=64, activation='relu')  # Dense layer
+    model.add_layer(dropout=0.5)  # Dropout layer
+    model.add_layer(n_input=64, n_output=48, activation='relu')  # Dense layer
+    model.add_layer(dropout=0.5)  # Dropout layer
+    model.add_layer(n_input=48, n_output=1, activation='sigmoid')  # Final dense layer
+    print("Initial Model Training:")
+    model.fit(X, y, epochs=20)
+    save_model(model, model_filename)
 
-print("Initial Model Training:")
-model.fit(X,y, epochs=10) # Increased epochs for initial training
 
 
 @app.route('/predict', methods=['POST'])
@@ -575,92 +576,7 @@ def predict():
         new_X.append(new_sample_row)
 
         
-            # with model_lock:
-            #     print("Retraining model...")
-            #     # Create a DataFrame from accumulated new_data, using the columns from the main df
-            #     try:
-            #         # Ensure the columns match the format expected by the CSV (including Diabetes_binary)
-            #         df_additional = pd.DataFrame(new_data, columns=df.columns)
-            #     except Exception as e:
-            #         print(f"Error creating DataFrame from new_data during retraining: {e}")
-            #         # Clear new_data and return to prevent further issues with potentially malformed data
-            #         new_data = []
-            #         # Log the error and potentially alert, but allow prediction to continue with old model
-            #         return jsonify({'prediction': result, 'probability': float(result_probability), 'warning': 'Error processing new data for retraining.'}), 200
-
-
-            #     # Save new data to disk - append mode
-            #     try:
-            #         # Check if file exists to write header only once
-            #         write_header = not os.path.exists(new_data_file) # Write header if file doesn't exist
-            #         # If file exists but is empty, also write header
-            #         if os.path.exists(new_data_file) and os.stat(new_data_file).st_size == 0:
-            #              write_header = True
-
-            #         # Append the additional data. Ensure columns match df for consistent saving.
-            #         df_additional[df.columns].to_csv(new_data_file, mode='a', header=write_header, index=False)
-            #         print(f"Appended {len(df_additional)} new rows to {new_data_file}.")
-
-            #     except Exception as e:
-            #         print(f"Error saving new data to csv during retraining: {e}")
-            #         # Log the error. Retraining will proceed with data loaded from files below.
-
-
-            #     try:
-            #         # Reload ALL data from scratch for retraining to ensure consistency
-            #         temp_df = pd.read_csv('Phase 2 data.csv')
-            #         if os.path.exists(new_data_file):
-            #              temp_new_df = pd.read_csv(new_data_file)
-            #              # Check if columns match before concatenating reloaded data
-            #              if list(temp_new_df.columns) == list(temp_df.columns):
-            #                  temp_df = pd.concat([temp_df, temp_new_df], ignore_index=True, sort=False)
-            #                  print(f"Retraining data includes {len(temp_new_df)} rows from {new_data_file}.")
-            #              else:
-            #                  print("Warning: Columns in reloaded new_data.csv mismatch main data. Skipping append for retraining.")
-
-
-            #         # Prepare data for retraining from the reloaded temp_df
-            #         if 'Diabetes_binary' in temp_df.columns:
-            #             y_retrain = temp_df['Diabetes_binary']
-            #             # Ensure X_retrain uses the correct feature columns
-            #             expected_feature_columns_local = [c.strip() for c in columns if c.strip() != 'Diabetes_binary']
-            #             # Verify all expected columns are present in temp_df before selecting
-            #             if all(col in temp_df.columns for col in expected_feature_columns_local):
-            #                  X_retrain = temp_df[expected_feature_columns_local]
-            #                  df = temp_df # Update the global df reference
-
-            #                  # Clear new data after successful saving/reloading for retraining
-            #                  new_data = []
-
-
-            #                  # Reinitialize and train the model
-            #                  # Using the adjusted learning rate
-            #                  model = NN(lr=0.00005)
-            #                  # Changed hidden layer activations to ReLU for retraining as well
-            #                  model.add_layer(n_input=X_retrain.shape[1], n_output=192, activation='relu')
-            #                  model.add_layer(dropout=0.5)
-            #                  model.add_layer(n_input=192, n_output=64, activation='relu')
-            #                  model.add_layer(dropout=0.5)
-            #                  model.add_layer(n_input=64, n_output=48, activation='relu')
-            #                  model.add_layer(dropout=0.5)
-            #                  model.add_layer(n_input=48, n_output=1, activation='sigmoid') # Output layer remains sigmoid
-            #                  # *** Use Focal Loss for retraining as well ***
-            #                  model.fit(X_retrain, y_retrain, epochs=5) # Reduced epochs for retraining
-            #                  print("Retraining complete.")
-            #             else:
-            #                  missing_retrain_cols = [col for col in expected_feature_columns_local if col not in temp_df.columns]
-            #                  print(f"Error: Missing expected feature columns for retraining: {missing_retrain_cols}. Skipping retraining.")
-
-
-            #         else:
-            #              print("Error: 'Diabetes_binary' column not found after reloading data for retraining. Skipping retraining.")
-
-
-            #     except Exception as e:
-            #         print(f"Critical Error during retraining data load or model fit: {e}")
-            #         # If retraining fails critically, the model remains the old one.
-            #         # A production system would need a more robust strategy (e.g., alerting, fallback model).
-
+           
 
     return jsonify({'prediction': result, 'probability': float(result_probability)}), 200
 

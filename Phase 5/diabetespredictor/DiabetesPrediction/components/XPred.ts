@@ -54,3 +54,26 @@ export interface XPred {
     Earn50Kto74K?: boolean;  
     Earn75korMore?: boolean;
 }
+
+export interface XPredResult {
+    prediction?: string;
+    probability?: number;
+}
+
+export function orderXPredObject(obj: Record<string, any>): XPred {
+    const ordered: XPred = {};
+
+    // Define the keys in the order they appear in the XPred interface
+    const keysOrder: (keyof XPred)[] = [
+        "HighBP", "HighChol", "CholCheck", "Smoker", "Stroke", "HeartDisease", "PhysicalActivity", "Fruits", "Veggies", "HvyAlcoholConsump", "AnyHealthcare", "NoDocbcCost", "DiffWalk", "Sex", "Underweight", "NormalWeight", "Overweight", "Class1Obesity", "Class2Obesity", "Class3Obesity", "ExcellentGeneralHealth", "VeryGoodGeneralHealth", "GoodGeneralHealth", "FairGeneralHealth", "PoorGeneralHealth", "MentallyHealthy", "PhysicallyHealthy", "Age18to24", "Age25to29", "Age30to34", "Age35to39", "Age40to44", "Age45to49", "Age50to54", "Age55to59", "Age60to64", "Age65to69", "Age70to74", "Age75to79", "Age80Plus", "NeverAttendedOrOnlyKindergarten", "SomeElementary", "SomeHighSchool", "GraduatedFromHighSchool", "SomeCollegeOrTechnicalSchool", "GraduatedFromCollege", "EarnLessThan10K", "Earn10Kto14K", "Earn15Kto19K", "Earn20Kto24K", "Earn25Kto34K", "Earn35Kto49K", "Earn50Kto74K", "Earn75korMore"
+    ];
+
+    // Iterate over the keys in the defined order
+    keysOrder.forEach((key) => {
+        if (key in obj) {
+            ordered[key] = obj[key];
+        }
+    });
+
+    return ordered;
+}

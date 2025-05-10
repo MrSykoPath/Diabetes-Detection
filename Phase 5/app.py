@@ -1,6 +1,7 @@
 #import
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from collections import OrderedDict
 import json
 import numpy as np
 import pandas as pd
@@ -416,7 +417,7 @@ def check_data(data):
 
 # References the file
 app = Flask(__name__)
-CORS(app) # Enable CORS if needed for frontend interaction
+CORS(app, resources={r'*': {'origins': '*'}}) # Allow all origins for CORS
 
 columns = []
 prediction_count = 0
@@ -509,6 +510,7 @@ if 'Diabetes_binary' in df.columns:
     y = df['Diabetes_binary']
     # Ensure X only contains the feature columns based on our 'columns' list
     X = df[expected_feature_columns]
+    print(df)
 else:
     print("Error: 'Diabetes_binary' column not found in the combined data (Phase 2 data.csv + new_data.csv) for initial training.")
     exit()
@@ -542,10 +544,11 @@ def predict():
     # Convert the input data (dictionary) into a DataFrame, ensuring column order
     try:
         # Use the make_list function which orders data according to 'columns' list
-        x = make_list(data)
         # Create DataFrame with explicit feature column names
-        expected_feature_columns_local = [col.strip() for col in columns if col.strip() != 'Diabetes_binary']
-        x_df = pd.DataFrame([x], columns=expected_feature_columns_local)
+        # expected_feature_columns_local = [col.strip() for col in columns if col.strip() != 'Diabetes_binary']
+        ordered_data = OrderedDict(data)
+        x_df = pd.DataFrame([ordered_data])
+        print(f"Input DataFrame for prediction: {x_df}")
     except Exception as e:
          return jsonify({'error': f'Error processing input data for prediction: {e}'}), 400
 

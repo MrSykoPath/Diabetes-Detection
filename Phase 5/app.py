@@ -616,6 +616,8 @@ def add_feedback():
                 # Use model_lock during retraining to prevent predictions
 
                 model.update_weights(new_data) # Update model weights with new data
+                save_model(model)  # Save the updated model
+                print("Model retrained with new data.")
 
         # Save the new sample to the CSV file
         try:

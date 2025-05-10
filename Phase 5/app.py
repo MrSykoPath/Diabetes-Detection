@@ -125,10 +125,9 @@ class DropoutLayer:
         self.Ai = None
         self.training = True  # default to training mode
 
-    def forward(self, Ai):
-        # Dropout layer also needs to handle potentially non-NumPy input
-        Ai = np.asarray(Ai) # Ensure input is NumPy array
-        if self.training:
+    def forward(self, Ai, training=True):
+        Ai = np.asarray(Ai)  # Ensure input is NumPy array
+        if training:
             self.mask = (np.random.rand(*Ai.shape) > self.dropout_rate).astype(float)
             # Scale up the remaining neurons
             return (Ai * self.mask) / (1 - self.dropout_rate)
@@ -240,11 +239,12 @@ class NN:
 
 
     def forward(self, inp, training=True):
-        # Convert initial input to NumPy array
         a = np.asarray(inp)
         for layer in self.layers:
-            # Layers handle their own input conversion now, but this is good practice
-            a = layer.forward(a)
+            if isinstance(layer, DropoutLayer):
+                a = layer.forward(a, training=training)
+            else:
+                a = layer.forward(a)
         return a
 
     def backward(self,input):
@@ -320,7 +320,7 @@ class NN:
 
 
     def update_weights(self, new_data_points):
-        global model, df, new_data_file, columns
+        global model, df, new_data_file, columns, model_lock
 
         # Convert new data points to a DataFrame
         try:
@@ -534,7 +534,7 @@ model.fit(X,y, epochs=10) # Increased epochs for initial training
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    global prediction_count, model, new_data, df, new_df, columns, new_X
+    global prediction_count, model, new_data, df, new_df, columns, new_X, model_lock
     data = request.get_json()
 
     # Validate the input data
@@ -666,7 +666,7 @@ def predict():
 
 @app.route('/add_feedback', methods=['POST'])
 def add_feedback():
-    global prediction_count, model, new_data, df, new_df, columns, new_X, new_y
+    global prediction_count, model, new_data, df, new_df, columns, new_X, new_y, model_lock
 
     data = request.get_json()
 

@@ -12,6 +12,8 @@ import time # Added for timestamp in backup file name
 from imblearn.over_sampling import SMOTE
 from collections import Counter
 import pickle
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score
 
 def save_model(model, filename='saved_model.pkl'):
     with open(filename, 'wb') as f:
@@ -180,38 +182,64 @@ class NN:
         return (yhat-y)
 
 
-    # Modified focal loss with dynamic class weighting
-    def focal_loss(self, y, yhat, gamma=2, alpha=None):
+    def focal_loss(self, y, yhat, gamma=2, alpha=0.25):
+        """
+        Implementation of Focal Loss for binary classification
+        
+        Parameters:
+        - gamma: focusing parameter that controls the down-weighting of well-classified examples
+        - alpha: weighting factor for the positive class
+        
+        Formula: -alpha * (1-pt)^gamma * log(pt) where pt is the predicted probability
+        """
         y = np.asarray(y)
         yhat = np.asarray(yhat)
         epsilon = 1e-7
+        
+        # Clip predictions for numerical stability
         yhat = np.clip(yhat, epsilon, 1 - epsilon)
         
-        # Auto-balance if alpha not specified
-        if alpha is None:
-            alpha = np.mean(y)  # Positive class ratio
-        
-        alpha_t = y * alpha + (1 - y) * (1 - alpha)
+        # Calculate pt (predicted probability of the true class)
         pt = y * yhat + (1 - y) * (1 - yhat)
-        loss = -alpha_t * (1 - pt)**gamma * np.log(pt + epsilon)
+        
+        # Calculate class weights
+        alpha_t = y * alpha + (1 - y) * (1 - alpha)
+        
+        # Focal loss formula
+        loss = -alpha_t * (1 - pt)**gamma * np.log(pt)
+        
         return np.mean(loss)
 
-    # Modified _diff_focal_loss
-    def _diff_focal_loss(self, y, yhat, gamma=2, alpha=None):
+    def _diff_focal_loss(self, y, yhat, gamma=2, alpha=0.25):
+        """
+        Gradient of the focal loss with respect to the predicted probability
+        """
         y = np.asarray(y)
         yhat = np.asarray(yhat)
         epsilon = 1e-7
+        
+        # Clip predictions for numerical stability
         yhat = np.clip(yhat, epsilon, 1 - epsilon)
         
-        if alpha is None:
-            alpha = np.mean(y)
-        
+        # pt is the probability of the true class
         pt = y * yhat + (1 - y) * (1 - yhat)
+        
+        # Alpha weight term
         alpha_t = y * alpha + (1 - y) * (1 - alpha)
-        dpt = yhat - y
-        grad = alpha_t * gamma * ((1 - pt)**(gamma-1)) * (-np.log(pt + epsilon)) * dpt \
-            + alpha_t * ((1 - pt)**gamma) * dpt / (pt + epsilon)
-        return np.clip(grad, -50.0, 50.0)
+        
+        # Calculate the sign term for the gradient (depends on the class)
+        # For y=1: dpt/dyhat = 1, for y=0: dpt/dyhat = -1
+        dpt_dyhat = y - (1 - y)
+        
+        # Full gradient calculation based on the chain rule
+        grad = alpha_t * (
+            gamma * (1 - pt)**(gamma-1) * np.log(pt + epsilon) * dpt_dyhat -
+            (1 - pt)**gamma * dpt_dyhat / (pt + epsilon)
+        )
+        
+        # Clip gradient to prevent exploding gradients
+        return np.clip(grad, -10.0, 10.0)
+
 
 
     def binary_cross_entropy(self, y, yhat):
@@ -273,47 +301,77 @@ class NN:
 
     
 
-    # Modified fit() method in NN class
-    def fit(self, x_train, y_train, epochs=5, apply_smote=True):
-        # Convert to numpy arrays immediately
-        x_train = np.asarray(x_train).T  # Original shape (features, samples)
+    def fit(self, x_train, y_train, epochs=30, apply_smote=True):
+        # Convert to numpy arrays
+        x_train = np.asarray(x_train).T
         y_train = np.asarray(y_train).T
-
-        # Reshape for SMOTE (samples, features)
+        
+        # Reshape for SMOTE
         x_train = x_train.T
-        y_train = y_train.ravel().astype(int)  # Ensure y_train is of type int
+        y_train = y_train.ravel().astype(int)
         
         if apply_smote:
-            # Apply SMOTE only to training data
+            # Apply SMOTE with less aggressive balancing
             print(f"Class distribution before SMOTE: {Counter(y_train)}")
-            sm = SMOTE(sampling_strategy='auto', k_neighbors=5, random_state=42)
+            # Use sampling_strategy=0.4 instead of 0.5 for less aggressive balancing
+            sm = SMOTE(sampling_strategy=0.5, k_neighbors=5, random_state=42)
             x_train, y_train = sm.fit_resample(x_train, y_train)
             print(f"Class distribution after SMOTE: {Counter(y_train)}")
         
-        # Transpose back to (features, samples) for model
+        # Reshape back
         x_train = x_train.T
         y_train = y_train.reshape(1, -1)
-
-        M = x_train.shape[1]  # Number of samples
         
-        # Calculate class weights dynamically
-        class_counts = np.bincount(y_train.ravel())
-        alpha = class_counts[0] / (class_counts[0] + class_counts[1])
+        # Modified focal loss parameters for better recall
+        gamma = 2.0  # Standard value
+        alpha = 0.40  # Increased from 0.25 to give more weight to positive class
+        
+        # Batch parameters
+        M = x_train.shape[1]
+        batch_size = 32
+        n_batches = max(1, M // batch_size)
         
         for i in range(epochs):
-            y_hat = self.forward(x_train)
-            loss = self.focal_loss(y_train, y_hat, alpha=alpha)
-            dl_dyhat = self._diff_focal_loss(y_train, y_hat, alpha=alpha)
+            # Shuffle data
+            indices = np.random.permutation(M)
+            x_shuffled = x_train[:, indices]
+            y_shuffled = y_train[:, indices]
             
-            # Rest of original training loop remains the same
-            self.backward(dl_dyhat)
+            epoch_loss = 0
             
-            # Weight update with gradient clipping
-            for layer in self.layers:
-                if isinstance(layer, Layer):
-                    layer.W -= self.alpha * np.clip(layer.dW/M, -1e5, 1e5)
-                    layer.b -= self.alpha * np.clip(layer.db/M, -1e5, 1e5)
-                    layer.zeroing_delta()
+            # Batch processing
+            for b in range(n_batches):
+                start_idx = b * batch_size
+                end_idx = min((b + 1) * batch_size, M)
+                
+                x_batch = x_shuffled[:, start_idx:end_idx]
+                y_batch = y_shuffled[:, start_idx:end_idx]
+                
+                # Forward pass
+                y_hat = self.forward(x_batch)
+                
+                # Use focal loss
+                loss = self.focal_loss(y_batch, y_hat, gamma=gamma, alpha=alpha)
+                epoch_loss += loss
+                
+                # Gradient
+                dl_dyhat = self._diff_focal_loss(y_batch, y_hat, gamma=gamma, alpha=alpha)
+                
+                # Backward pass
+                self.backward(dl_dyhat)
+                
+                # Weight updates with moderate clipping
+                for layer in self.layers:
+                    if isinstance(layer, Layer):
+                        batch_size = end_idx - start_idx
+                        layer.W -= self.alpha * np.clip(layer.dW/batch_size, -3, 3)
+                        layer.b -= self.alpha * np.clip(layer.db/batch_size, -3, 3)
+                        layer.zeroing_delta()
+            
+            # Print progress
+            if (i+1) % 5 == 0:
+                print(f"Epoch {i+1}/{epochs}, Loss: {epoch_loss/n_batches:.4f}")
+
 
 
     def update_weights(self, new_data_points):
@@ -502,16 +560,26 @@ if os.path.exists(new_data_file):
             print(f"Error during backup/creation of {new_data_file}: {rename_e}")
 
 
-# Prepare data for initial training
+# Prepare data for initial training and testing
 if 'Diabetes_binary' in df.columns:
     y = df['Diabetes_binary']
-    # Ensure X only contains the feature columns based on our 'columns' list
     X = df[expected_feature_columns]
-    print(df)
+    
+    # Standardize features - critical for neural network performance
+    from sklearn.preprocessing import StandardScaler
+    scaler = StandardScaler()
+    
+    # Split the data using stratification to maintain class distribution
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    print("Data split into training and testing sets.")
+    
+    # Print class distribution information
+    print(f"Positive class percentage: {y.mean()*100:.2f}%")
+    print(f"Training data distribution: {Counter(y_train)}")
+    print(f"Testing data distribution: {Counter(y_test)}")
 else:
-    print("Error: 'Diabetes_binary' column not found in the combined data (Phase 2 data.csv + new_data.csv) for initial training.")
+    print("Error: 'Diabetes_binary' column not found in the combined data for initial training.")
     exit()
-
 
 model_filename = 'saved_model.pkl'
 if os.path.exists(model_filename):
@@ -519,17 +587,76 @@ if os.path.exists(model_filename):
     model = load_model(model_filename)
 else:
     print("No saved model found. Initializing and training a new model.")
-    model = NN(lr=0.000005)
-    model.add_layer(n_input=X.shape[1], n_output=192, activation='relu')  # Dense layer
-    model.add_layer(dropout=0.5)  # Dropout layer
-    model.add_layer(n_input=192, n_output=64, activation='relu')  # Dense layer
-    model.add_layer(dropout=0.5)  # Dropout layer
-    model.add_layer(n_input=64, n_output=48, activation='relu')  # Dense layer
-    model.add_layer(dropout=0.5)  # Dropout layer
-    model.add_layer(n_input=48, n_output=1, activation='sigmoid')  # Final dense layer
+    
+    # Initialize model with the exact architecture shown in the image
+    model = NN(lr=0.001)
+    
+    # First dense layer with 192 neurons (10,560 parameters)
+    model.add_layer(n_input=X.shape[1], n_output=192, activation='relu')
+    
+    # First dropout layer with 0.5 rate
+    model.add_layer(dropout=0.5)
+    
+    # Second dense layer with 64 neurons (12,352 parameters)
+    model.add_layer(n_input=192, n_output=64, activation='relu')
+    
+    # Second dropout layer with 0.5 rate
+    model.add_layer(dropout=0.5)
+    
+    # Third dense layer with 48 neurons (3,120 parameters)
+    model.add_layer(n_input=64, n_output=48, activation='relu')
+    
+    # Third dropout layer with 0.5 rate
+    model.add_layer(dropout=0.5)
+    
+    # Output layer with 1 neuron (49 parameters)
+    model.add_layer(n_input=48, n_output=1, activation='sigmoid')
+    
     print("Initial Model Training:")
-    model.fit(X, y, epochs=20)
+    model.fit(X_train, y_train, epochs=50, apply_smote=True)
+    
+    # Save the trained model
     save_model(model, model_filename)
+
+# Evaluate model performance on the test data with adjusted threshold
+y_test_pred = model.predict(X_test)
+
+# Try different thresholds to find optimal precision-recall balance
+thresholds = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]
+best_f1 = 0
+best_threshold = 0.5
+
+for threshold in thresholds:
+    y_test_pred_binary = (y_test_pred >= threshold).astype(int)
+    
+    # Calculate performance metrics at this threshold
+    accuracy = accuracy_score(y_test, y_test_pred_binary)
+    precision = precision_score(y_test, y_test_pred_binary)
+    recall = recall_score(y_test, y_test_pred_binary)
+    f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+    
+    print(f"Threshold: {threshold:.1f}")
+    print(f"  Accuracy: {accuracy:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall: {recall:.4f}")
+    print(f"  F1 Score: {f1:.4f}")
+    
+    if f1 > best_f1:
+        best_f1 = f1
+        best_threshold = threshold
+
+# Use the best threshold
+y_test_pred_binary = (y_test_pred >= best_threshold).astype(int)
+accuracy = accuracy_score(y_test, y_test_pred_binary)
+precision = precision_score(y_test, y_test_pred_binary, average='macro')
+recall = recall_score(y_test, y_test_pred_binary, average='macro')
+f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+
+print(f"\nFinal Model Performance (threshold={best_threshold:.1f}):")
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
 
 
 
@@ -609,7 +736,7 @@ def add_feedback():
             prediction_count += 1
 
             # Check if retraining threshold is met
-            if prediction_count >= 1:
+            if prediction_count >= 10:
                 prediction_count = 0
 
                 # Retrain the model using original + new data

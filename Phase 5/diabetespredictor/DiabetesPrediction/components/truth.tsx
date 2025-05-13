@@ -53,13 +53,7 @@ export default function Truth({
   };
 
   return (
-    <Modal
-      backdrop="blur"
-      isOpen={isOpen}
-      onClose={onClose}
-      autoFocus={false}
-      className="p-8"
-    >
+    <Modal backdrop="blur" isOpen={isOpen} onClose={onClose} className="p-8">
       <ModalContent>
         {(modalOnClose) => (
           <>

@@ -44,7 +44,7 @@ export default function Results({
             radius="sm"
             showValueLabel={true}
             size="sm"
-            value={probability ? probability * 100 : 0}
+            value={2 * Math.abs(probability! - 0.5) * 100}
           />
           <p
             className={

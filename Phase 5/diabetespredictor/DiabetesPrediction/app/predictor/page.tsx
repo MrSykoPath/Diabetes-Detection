@@ -19,7 +19,7 @@ export default function Predictor() {
   const [submitted, setSubmitted] = React.useState(false);
   const [error, setError] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
-  const [response, setResponse] = React.useState<XPredResult | null>(null);
+  const [result, setResult] = React.useState<XPredResult | null>(null);
   const [bmi, setBmi] = React.useState<string>("");
   const [touched, setTouched] = React.useState<{ [key: string]: boolean }>({});
   const [prediction, setPrediction] = React.useState<XPred | null>(null);
@@ -36,9 +36,9 @@ export default function Predictor() {
   const [incomedropdown, setIncomeDropdown] = React.useState(
     new Set(["Less than $10,000"])
   );
-  // React.useEffect(() => {
-  //   console.log("Prediction:", prediction);
-  // }, [prediction]);
+  React.useEffect(() => {
+    console.log("Updated response:", result);
+  }, [result]);
 
   React.useEffect(() => {
     handleGeneralHealthDropdownChange(
@@ -178,19 +178,19 @@ export default function Predictor() {
           "Content-Type": "application/json",
         },
       })
-      .then((response) => {
-        console.log("Response:", response.data);
-        setResponse(response.data);
+      .then((data) => {
+        console.log("Response:", data.data);
+        setResult(data.data);
         setSubmitted(true);
         setLoading(false);
       })
       .catch((error) => {
         console.error("Error:", error);
+        setResult(null);
         setError(true);
         setLoading(false);
       })
       .finally(() => {
-        setResponse(null);
         setLoading(false);
       });
   };
@@ -774,8 +774,8 @@ export default function Predictor() {
         </Form>
         {submitted && !error && !loading && (
           <Results
-            positive={response?.prediction === "Diabetic or Prediabetic"}
-            probability={response?.probability}
+            positive={result?.prediction === "Diabetic or Prediabetic"}
+            probability={result?.probability}
           ></Results>
         )}
       </div>

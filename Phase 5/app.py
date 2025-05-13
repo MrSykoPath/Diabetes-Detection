@@ -567,6 +567,7 @@ def predict():
     with lock:
 
         df_feature_columns = [col for col in df.columns if col.strip() != 'Diabetes_binary']
+        print(f"Feature columns for new sample: {df_feature_columns}")
         
         ordered_feature_values = [data.get(col.strip(), 0) for col in df_feature_columns]
 

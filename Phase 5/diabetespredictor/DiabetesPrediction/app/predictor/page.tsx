@@ -14,6 +14,10 @@ import {
   DropdownMenu,
   DropdownItem,
 } from "@heroui/dropdown";
+import { Skeleton } from "@heroui/skeleton";
+import { Card } from "@heroui/card";
+import { useDisclosure } from "@heroui/modal";
+import Truth from "@/components/truth";
 
 export default function Predictor() {
   const [submitted, setSubmitted] = React.useState(false);
@@ -36,6 +40,7 @@ export default function Predictor() {
   const [incomedropdown, setIncomeDropdown] = React.useState(
     new Set(["Less than $10,000"])
   );
+  const { isOpen, onOpen, onClose } = useDisclosure();
   React.useEffect(() => {
     console.log("Updated response:", result);
   }, [result]);
@@ -172,6 +177,10 @@ export default function Predictor() {
     setLoading(true);
     setError(false);
     setSubmitted(false);
+    window.scrollTo({
+      top: document.body.scrollHeight,
+      behavior: "smooth",
+    });
     axios
       .post("http://127.0.0.1:5000/predict", data, {
         headers: {
@@ -194,6 +203,16 @@ export default function Predictor() {
         setLoading(false);
       });
   };
+
+  React.useEffect(() => {
+    if (submitted && !error) {
+      const timer = setTimeout(() => {
+        onOpen(); // Open the modal after 3 seconds
+      }, 3000);
+
+      return () => clearTimeout(timer); // Cleanup the timeout if the component unmounts
+    }
+  }, [submitted, error]);
 
   return (
     <>
@@ -772,6 +791,26 @@ export default function Predictor() {
             </Button>
           </div>
         </Form>
+        {loading && (
+          <Card className="w-3/5 space-y-5 p-4 mt-10" radius="lg">
+            <div className="grid grid-cols-4 gap-4">
+              <Skeleton className="rounded-lg w-32">
+                <div className="h-24 rounded-lg bg-default-200" />
+              </Skeleton>
+              <div className="space-y-3 col-span-3 flex flex-col justify-center">
+                <Skeleton className="w-3/5 rounded-lg">
+                  <div className="h-3 w-3/5 rounded-lg bg-default-200" />
+                </Skeleton>
+                <Skeleton className="w-4/5 rounded-lg">
+                  <div className="h-3 w-4/5 rounded-lg bg-default-200" />
+                </Skeleton>
+                <Skeleton className="w-2/5 rounded-lg">
+                  <div className="h-3 w-2/5 rounded-lg bg-default-200" />
+                </Skeleton>
+              </div>
+            </div>
+          </Card>
+        )}
         {submitted && !error && !loading && (
           <Results
             positive={result?.prediction === "Diabetic or Prediabetic"}
@@ -779,6 +818,7 @@ export default function Predictor() {
           ></Results>
         )}
       </div>
+      {submitted && !error && <Truth isOpen={isOpen} onClose={onClose} />}
     </>
   );
 }

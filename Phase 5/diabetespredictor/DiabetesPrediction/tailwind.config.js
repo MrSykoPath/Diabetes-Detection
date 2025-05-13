@@ -3,9 +3,9 @@ import {heroui} from "@heroui/theme"
 /** @type {import('tailwindcss').Config} */
 const config = {
   content: [
-    './components/**/*.{js,ts,jsx,tsx,mdx}',
-    './app/**/*.{js,ts,jsx,tsx,mdx}',
-    "./node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}"
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./node_modules/@heroui/theme/dist/components/(button|card|code|dropdown|image|input|kbd|link|listbox|modal|navbar|progress|radio|skeleton|snippet|toggle|toast|ripple|spinner|menu|divider|popover|form).js"
   ],
   theme: {
     extend: {
